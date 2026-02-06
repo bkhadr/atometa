@@ -1,0 +1,19 @@
+{
+  "name": "atometa",
+  "version": "0.1.0",
+  "dependencies": [
+    {
+      "name": "glfw3",
+      "default-features": false,
+      "features": []
+    },
+    "glad",
+    "glm",
+    {
+      "name": "imgui",
+      "features": [ "glfw-binding", "opengl3-binding" ]
+    },
+    "eigen3",
+    "stb"
+  ]
+}

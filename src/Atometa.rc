@@ -1,0 +1,35 @@
+#include <windows.h>
+#include <winver.h>
+
+// Application icon
+IDI_APP_ICON ICON "assets/icons/app.ico"
+
+// Version info
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION     0,1,0,0
+PRODUCTVERSION  0,1,0,0
+FILEFLAGSMASK   VS_FFI_FILEFLAGSMASK
+FILEFLAGS       VS_FF_DEBUG
+FILEOS          VOS_NT_WINDOWS32
+FILETYPE        VFT_APP
+FILESUBTYPE     VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"  // English (United States) + Unicode
+        BEGIN
+            VALUE "CompanyName", "Atometa Team"
+            VALUE "FileDescription", "3D Chemistry Simulation Engine"
+            VALUE "FileVersion", "0.1.0.0"
+            VALUE "InternalName", "Atometa"
+            VALUE "LegalCopyright", "Copyright © 2026 Atometa Team"
+            VALUE "OriginalFilename", "Atometa.exe"
+            VALUE "ProductName", "Atometa"
+            VALUE "ProductVersion", "0.1.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1200  // English (United States), Unicode
+    END
+END
