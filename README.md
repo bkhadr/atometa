@@ -254,6 +254,18 @@ While this is primarily a PhD research project, contributions are welcome.
 4. Push to the branch
 5. Open a Pull Request
 
+## Issues & Feedback
+
+Found a bug or have an idea for a new feature?
+
+→ Open an issue here: [https://github.com/venits/atometa/issues/new](https://github.com/venits/atometa/issues/new)
+
+Please use the provided templates:
+- Bug Report
+- Feature Request
+
+Search existing issues first to avoid duplicates.
+
 ## License
 
 This project is licensed under the MIT License. See LICENSE file for details.
