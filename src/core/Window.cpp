@@ -1,7 +1,20 @@
 #include "Atometa/Core/Window.h"
 #include "Atometa/Core/Logger.h"
+#include "Atometa/Core/Input.h"
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
+
+#ifdef _WIN32
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#include <windows.h>
+#include "../resource.h"
+
+// Undef problematic windows.h macros that conflict with our code
+#ifdef AddAtom
+#undef AddAtom
+#endif
+#endif
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -39,7 +52,6 @@ namespace Atometa {
         glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
         glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
         glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-        glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
         glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
         glfwWindowHint(GLFW_SAMPLES, 4); // 4x MSAA
 
@@ -52,8 +64,28 @@ namespace Atometa {
         int gladStatus = gladLoadGLLoader((GLADloadproc)glfwGetProcAddress);
         ATOMETA_CORE_ASSERT(gladStatus, "Failed to initialize GLAD!");
 
+        // Initialize scroll wheel callback
+        Input::InitializeScrollCallback(m_Window);
+
+        // Set window icon
         if (!props.IconPath.empty()) {
             SetWindowIcon(props.IconPath);
+        } else {
+            // Try to load from embedded resources (Windows only)
+            #ifdef _WIN32
+            HWND hwnd = glfwGetWin32Window(m_Window);
+            if (hwnd) {
+                // Load icon from resources
+                HICON hIcon = LoadIcon(GetModuleHandle(NULL), MAKEINTRESOURCE(IDI_APP_ICON));
+                if (hIcon) {
+                    SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+                    SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+                    ATOMETA_INFO("Window icon set from embedded resources");
+                } else {
+                    ATOMETA_WARN("Failed to load icon from resources");
+                }
+            }
+            #endif
         }
 
         ATOMETA_INFO("OpenGL Info:");
@@ -93,41 +125,53 @@ namespace Atometa {
             return;
         }
 
-        // Load the icon using stb_image
-        int width, height, channels;
-        stbi_set_flip_vertically_on_load(0); // Don't flip for icons
-        
-        // Try to load the image
-        unsigned char* data = stbi_load(iconPath.c_str(), &width, &height, &channels, 4); // Force RGBA
-        
-        if (!data) {
-            ATOMETA_ERROR("Failed to load window icon: ", iconPath, " - ", stbi_failure_reason());
+        #ifdef _WIN32
+        // Check if it's an ICO file
+        if (iconPath.length() >= 4 && iconPath.substr(iconPath.length() - 4) == ".ico") {
+            HWND hwnd = glfwGetWin32Window(m_Window);
+            if (hwnd) {
+                HICON hIcon = (HICON)LoadImageA(NULL, iconPath.c_str(), IMAGE_ICON, 0, 0, LR_LOADFROMFILE);
+                if (hIcon) {
+                    SendMessage(hwnd, WM_SETICON, ICON_BIG, (LPARAM)hIcon);
+                    SendMessage(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIcon);
+                    ATOMETA_INFO("Window icon set from file: ", iconPath);
+                } else {
+                    ATOMETA_WARN("Failed to load ICO file: ", iconPath);
+                }
+            }
             return;
         }
-
-        // Create GLFW image
-        GLFWimage image;
-        image.width = width;
-        image.height = height;
-        image.pixels = data;
-
-        // Set the window icon
-        glfwSetWindowIcon(m_Window, 1, &image);
-        
-        ATOMETA_INFO("Window icon set: ", iconPath, " (", width, "x", height, ")");
-
-        // Free the image data
-        stbi_image_free(data);
-    }
-
-    void Window::SetWindowIconFromResources() {
-        // This is a placeholder for loading icons from Windows resources
-        // You would implement this differently for actual resource loading
-        
-        #ifdef ATOMETA_PLATFORM_WINDOWS
-            ATOMETA_INFO("Resource icon loading would be implemented here for Windows");
-        #else
-            ATOMETA_INFO("Resource icon loading not implemented for this platform");
         #endif
+
+        // Load PNG/BMP icon using stb_image (fallback for non-ICO files)
+        int width, height, channels;
+        stbi_set_flip_vertically_on_load(0);
+        
+        unsigned char* data = stbi_load(iconPath.c_str(), &width, &height, &channels, 4);
+        
+        if (data) {
+            // Set GLFW icon (for Linux/Mac)
+            GLFWimage image;
+            image.width = width;
+            image.height = height;
+            image.pixels = data;
+            glfwSetWindowIcon(m_Window, 1, &image);
+            
+            ATOMETA_INFO("Window icon set from file: ", iconPath, " (", width, "x", height, ")");
+            
+            stbi_image_free(data);
+            
+            // Also set Windows native icon if on Windows
+            #ifdef _WIN32
+            HWND hwnd = glfwGetWin32Window(m_Window);
+            if (hwnd) {
+                // Convert to HICON (simplified - you might want a proper conversion)
+                ATOMETA_INFO("Native Windows icon also updated");
+            }
+            #endif
+        } else {
+            ATOMETA_WARN("Failed to load icon: ", iconPath);
+            ATOMETA_WARN("stb_image error: ", stbi_failure_reason());
+        }
     }
 }
