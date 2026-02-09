@@ -5,6 +5,9 @@
 #include <iostream>
 #include <sstream>
 
+// Forward declare Windows API
+extern "C" __declspec(dllimport) void __stdcall OutputDebugStringA(const char* lpOutputString);
+
 namespace Atometa {
     enum class LogLevel { Trace, Info, Warn, Error, Fatal };
 
@@ -39,7 +42,9 @@ namespace Atometa {
                 case LogLevel::Error: levelStr = "[ERROR]"; break;
                 case LogLevel::Fatal: levelStr = "[FATAL]"; break;
             }
-            std::cout << levelStr << " " << oss.str() << std::endl;
+            
+            std::string fullMsg = std::string(levelStr) + " " + oss.str() + "\n";
+            OutputDebugStringA(fullMsg.c_str());
         }
     };
 }
