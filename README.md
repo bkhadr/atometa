@@ -1,5 +1,6 @@
 # Atometa
 
+> **A → meta** · From the atom to what lies beyond.  
 3D Chemistry Simulation Engine for Research and Education
 
 ---
