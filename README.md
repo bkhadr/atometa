@@ -259,7 +259,7 @@ While this is primarily a PhD research project, contributions are welcome.
 
 Found a bug or have an idea for a new feature?
 
-→ Open an issue here: [https://github.com/venits/atometa/issues/new](https://github.com/venits/atometa/issues/new)
+→ Open an issue here: [https://github.com/khadrx/atometa/issues/new](https://github.com/khadrx/atometa/issues/new)
 
 Please use the provided templates:
 - Bug Report
