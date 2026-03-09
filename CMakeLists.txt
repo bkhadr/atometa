@@ -64,6 +64,11 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     if(CMAKE_BUILD_TYPE STREQUAL "Release")
         add_compile_options(-O3)
     endif()
+    # MinGW on Windows: Boost.Beast produces huge translation units
+    # -Wa,-mbig-obj is the GCC equivalent of MSVC's /bigobj
+    if(WIN32)
+        add_compile_options(-Wa,-mbig-obj)
+    endif()
 endif()
 
 # ============================================================================
@@ -84,7 +89,6 @@ find_package(glfw3         CONFIG REQUIRED)
 find_package(glad          CONFIG REQUIRED)
 find_package(glm           CONFIG REQUIRED)
 find_package(imgui         CONFIG REQUIRED)
-find_package(assimp        CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(Boost         REQUIRED COMPONENTS system)
 
@@ -127,7 +131,6 @@ target_link_libraries(AtometaLib PUBLIC
     glad::glad
     glm::glm
     imgui::imgui
-    assimp::assimp
     nlohmann_json::nlohmann_json
     Boost::system
 )
