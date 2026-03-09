@@ -95,3 +95,5 @@ pyproject.toml
 assets/molecules/
 *.xyz
 *.jsx
+
+vcpkg/
