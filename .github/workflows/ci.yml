@@ -10,7 +10,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# ─────────────────────────────────────────────────────────────────────────────
 jobs:
   build:
     name: ${{ matrix.name }}
@@ -21,34 +20,24 @@ jobs:
       matrix:
         include:
 
-          # ── Windows (MSVC) ─────────────────────────────────────────────
+          # ── Windows (MSVC) ────────────────────────────────────────────
           - name: Windows (MSVC x64)
             os: windows-latest
             preset: windows-msvc
             triplet: x64-windows-static
-            cmake_extra: >-
-              -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
-              -DVCPKG_TARGET_TRIPLET=x64-windows-static
 
-          # ── Linux (GCC) ────────────────────────────────────────────────
+          # ── Linux (GCC) ───────────────────────────────────────────────
           - name: Linux (GCC x64)
             os: ubuntu-24.04
             preset: linux-gcc
             triplet: x64-linux
-            cmake_extra: >-
-              -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
-              -DVCPKG_TARGET_TRIPLET=x64-linux
 
-          # ── macOS (Clang arm64) ────────────────────────────────────────
+          # ── macOS (Clang arm64) ───────────────────────────────────────
           - name: macOS (Clang arm64)
             os: macos-14
             preset: macos-clang
             triplet: arm64-osx
-            cmake_extra: >-
-              -DCMAKE_TOOLCHAIN_FILE=$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake
-              -DVCPKG_TARGET_TRIPLET=arm64-osx
 
-    # ── Steps ─────────────────────────────────────────────────────────────
     steps:
 
       # 1 — Checkout
@@ -57,21 +46,15 @@ jobs:
         with:
           submodules: recursive
 
-      # 2 — Setup vcpkg (with cache)
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgJsonGlob: vcpkg.json
-          # Cache key includes OS + triplet + hash of vcpkg.json
-          # Automatically invalidated when dependencies change
-          runVcpkgInstall: true
-
-      # 3 — Linux system deps (OpenGL + display for GLFW headless)
+      # 2 — Linux: system deps BEFORE vcpkg (vcpkg needs OpenGL/X11 headers)
       - name: Install Linux system deps
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            ninja-build \
+            pkg-config \
             libgl1-mesa-dev \
             libglu1-mesa-dev \
             libx11-dev \
@@ -80,34 +63,58 @@ jobs:
             libxcursor-dev \
             libxi-dev \
             libxext-dev \
-            xvfb \
-            ninja-build
+            libwayland-dev \
+            libxkbcommon-dev \
+            xvfb
 
-      # 4 — macOS system deps
+      # 3 — macOS: system deps BEFORE vcpkg
       - name: Install macOS system deps
         if: runner.os == 'macOS'
-        run: brew install ninja
+        run: brew install ninja pkg-config
 
-      # 5 — Windows: ensure Ninja available
+      # 4 — Windows: Ninja
       - name: Install Ninja (Windows)
         if: runner.os == 'Windows'
         run: choco install ninja --no-progress -y
 
-      # 6 — Configure
+      # 5 — Setup vcpkg + install deps (after system headers are present)
+      - name: Setup vcpkg
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgJsonGlob: vcpkg.json
+          runVcpkgInstall: true
+        env:
+          VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
+
+      # 6 — Print vcpkg failure logs if install failed
+      - name: Show vcpkg logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== vcpkg logs ==="
+          find "${{ github.workspace }}/vcpkg" -name "*.log" 2>/dev/null \
+            | head -20 \
+            | xargs -I{} sh -c 'echo "--- {} ---"; cat "{}"' || true
+          find "${{ github.workspace }}/vcpkg_installed" -name "*.log" 2>/dev/null \
+            | head -10 \
+            | xargs -I{} sh -c 'echo "--- {} ---"; cat "{}"' || true
+
+      # 7 — Configure
       - name: Configure
         shell: bash
         run: |
           cmake -B build -S . \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
-            ${{ matrix.cmake_extra }}
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
 
-      # 7 — Build
+      # 8 — Build
       - name: Build
         shell: bash
         run: cmake --build build --config Debug --parallel
 
-      # 8 — Upload artifacts
+      # 9 — Upload artifacts
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         if: success()
@@ -117,3 +124,15 @@ jobs:
             build/bin/
             build/lib/
           retention-days: 7
+
+      # 10 — Upload logs on failure
+      - name: Upload failure logs
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: logs-${{ matrix.preset }}
+          path: |
+            build/CMakeFiles/CMakeOutput.log
+            build/CMakeFiles/CMakeError.log
+            ${{ github.workspace }}/vcpkg/buildtrees/**/config-*.log
+          retention-days: 3
