@@ -3,6 +3,7 @@ name: CI
 on:
   push:
     branches: [ main, develop ]
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, develop ]
 
@@ -14,125 +15,76 @@ jobs:
   build:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-
     strategy:
       fail-fast: false
       matrix:
         include:
-
-          # ── Windows (MSVC) ────────────────────────────────────────────
-          - name: Windows (MSVC x64)
+          - name: Windows (x64)
             os: windows-latest
             preset: windows-msvc
             triplet: x64-windows-static
-
-          # ── Linux (GCC) ───────────────────────────────────────────────
-          - name: Linux (GCC x64)
+          - name: Linux (x64)
             os: ubuntu-24.04
             preset: linux-gcc
             triplet: x64-linux
-
-          # ── macOS (Clang arm64) ───────────────────────────────────────
-          - name: macOS (Clang arm64)
+          - name: macOS (arm64)
             os: macos-14
             preset: macos-clang
             triplet: arm64-osx
 
     steps:
+      - uses: actions/checkout@v4
+        with: { submodules: recursive }
 
-      # 1 — Checkout
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      # 2 — Linux: system deps BEFORE vcpkg (vcpkg needs OpenGL/X11 headers)
-      - name: Install Linux system deps
+      - name: Install system dependencies
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            build-essential \
-            ninja-build \
-            pkg-config \
-            libgl1-mesa-dev \
-            libglu1-mesa-dev \
-            libx11-dev \
-            libxrandr-dev \
-            libxinerama-dev \
-            libxcursor-dev \
-            libxi-dev \
-            libxext-dev \
-            libwayland-dev \
-            libxkbcommon-dev \
-            xvfb
-
-      # 3 — macOS: system deps BEFORE vcpkg
-      - name: Install macOS system deps
+          sudo apt-get install -y --no-install-recommends build-essential ninja-build pkg-config libgl1-mesa-dev libglu1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev
+      
+      - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
         run: brew install ninja pkg-config
 
-      # 4 — Windows: Ninja
-      - name: Install Ninja (Windows)
-        if: runner.os == 'Windows'
-        run: choco install ninja --no-progress -y
-
-      # 5 — Setup vcpkg + install deps (after system headers are present)
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgJsonGlob: vcpkg.json
           runVcpkgInstall: true
-        env:
-          VCPKG_DEFAULT_TRIPLET: ${{ matrix.triplet }}
+          additionalCachedPaths: ${{ github.workspace }}/vcpkg_installed
 
-      # 6 — Print vcpkg failure logs if install failed
-      - name: Show vcpkg logs on failure
-        if: failure()
+      - name: Configure & Build
         shell: bash
         run: |
-          echo "=== vcpkg logs ==="
-          find "${{ github.workspace }}/vcpkg" -name "*.log" 2>/dev/null \
-            | head -20 \
-            | xargs -I{} sh -c 'echo "--- {} ---"; cat "{}"' || true
-          find "${{ github.workspace }}/vcpkg_installed" -name "*.log" 2>/dev/null \
-            | head -10 \
-            | xargs -I{} sh -c 'echo "--- {} ---"; cat "{}"' || true
-
-      # 7 — Configure
-      - name: Configure
-        shell: bash
-        run: |
-          cmake -B build -S . \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Debug \
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          cmake --build build --config Release --parallel
 
-      # 8 — Build
-      - name: Build
+      - name: Package artifacts
         shell: bash
-        run: cmake --build build --config Debug --parallel
+        run: |
+          mkdir -p dist
+          tar -czf dist/atometa-${{ runner.os }}-${{ matrix.triplet }}.tar.gz -C build/bin .
 
-      # 9 — Upload artifacts
-      - name: Upload build artifacts
+      - name: Generate Hash
+        shell: bash
+        run: |
+          cd dist
+          sha256sum atometa-${{ runner.os }}-${{ matrix.triplet }}.tar.gz > atometa-${{ runner.os }}-${{ matrix.triplet }}.tar.gz.sha256
+
+      - name: Upload binaries
         uses: actions/upload-artifact@v4
-        if: success()
         with:
-          name: atometa-${{ matrix.preset }}-debug
-          path: |
-            build/bin/
-            build/lib/
+          name: build-${{ matrix.preset }}
+          path: dist/*
           retention-days: 7
 
-      # 10 — Upload logs on failure
-      - name: Upload failure logs
-        uses: actions/upload-artifact@v4
-        if: failure()
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v1
         with:
-          name: logs-${{ matrix.preset }}
-          path: |
-            build/CMakeFiles/CMakeOutput.log
-            build/CMakeFiles/CMakeError.log
-            ${{ github.workspace }}/vcpkg/buildtrees/**/config-*.log
-          retention-days: 3
+          files: dist/*
+          draft: false
+          prerelease: false
