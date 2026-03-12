@@ -3,13 +3,16 @@ name: CI
 on:
   push:
     branches: [ main, develop ]
-    tags: [ 'v*' ]
+    tags:     [ 'v*' ]
   pull_request:
     branches: [ main, develop ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"   # GitHub Actions binary cache for compiled packages
 
 jobs:
   build:
@@ -19,37 +22,75 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Windows (x64)
-            os: windows-latest
-            preset: windows-msvc
+          - name:    Windows (x64)
+            os:      windows-latest
+            preset:  windows-msvc
             triplet: x64-windows-static
-          - name: Linux (x64)
-            os: ubuntu-24.04
-            preset: linux-gcc
+
+          - name:    Linux (x64)
+            os:      ubuntu-24.04
+            preset:  linux-gcc
             triplet: x64-linux
-          - name: macOS (arm64)
-            os: macos-14
-            preset: macos-clang
+
+          - name:    macOS (arm64)
+            os:      macos-14
+            preset:  macos-clang
             triplet: arm64-osx
 
     steps:
+      # ── Checkout ──────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
-      - name: Install system dependencies
+      # ── vcpkg binary cache ────────────────────────────────────────────────
+      # Must come BEFORE vcpkg runs. Exports ACTIONS_CACHE_URL and
+      # ACTIONS_RUNTIME_TOKEN so vcpkg can read/write the GHA binary cache.
+      - name: Export GitHub Actions cache env vars
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.exportVariable('ACTIONS_CACHE_URL',     process.env.ACTIONS_CACHE_URL    || '');
+            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
+
+      # ── System deps ───────────────────────────────────────────────────────
+      - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends build-essential ninja-build pkg-config libgl1-mesa-dev libglu1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libwayland-dev libxkbcommon-dev
-      
+          sudo apt-get install -y --no-install-recommends \
+            build-essential ninja-build pkg-config \
+            libgl1-mesa-dev libglu1-mesa-dev \
+            libx11-dev libxrandr-dev libxinerama-dev \
+            libxcursor-dev libxi-dev libxext-dev \
+            libwayland-dev libxkbcommon-dev
+
       - name: Install Ninja (macOS)
         if: runner.os == 'macOS'
         run: brew install ninja pkg-config
 
       - name: Install Ninja (Windows)
         if: runner.os == 'Windows'
-        run: choco install ninja
+        run: choco install ninja --no-progress
 
+      # ── MSVC developer environment (Windows only) ─────────────────────────
+      # MUST come before vcpkg + CMake so that:
+      #   • vcpkg detects cl.exe and builds assimp with MSVC ABI
+      #   • CMake links against assimp-vc143-mt.lib with the same compiler
+      # Without this step, choco's Ninja is on PATH but cl.exe is not, and
+      # CMake falls back to MinGW gcc — causing the __CxxFrameHandler4 /
+      # __std_terminate ABI mismatch errors.
+      - name: Setup MSVC developer environment
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # ── vcpkg ─────────────────────────────────────────────────────────────
+      # lukka/run-vcpkg:
+      #   • Bootstraps vcpkg if not already cached
+      #   • Runs `vcpkg install` from vcpkg.json
+      #   • Caches the vcpkg tool + installed tree between runs
+      # Compiled package binaries are cached separately via VCPKG_BINARY_SOURCES above.
       - name: Setup vcpkg
         uses: lukka/run-vcpkg@v11
         with:
@@ -57,39 +98,53 @@ jobs:
           runVcpkgInstall: true
           additionalCachedPaths: ${{ github.workspace }}/vcpkg_installed
 
-      - name: Configure & Build
+      # ── Configure ─────────────────────────────────────────────────────────
+      - name: Configure CMake
         shell: bash
+        env:
+          # Force cl.exe on Windows — prevents CMake from picking up MinGW
+          CC:  ${{ runner.os == 'Windows' && 'cl' || '' }}
+          CXX: ${{ runner.os == 'Windows' && 'cl' || '' }}
         run: |
           cmake -B build -S . -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
+            -DATOMETA_USE_PCH=OFF \
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" \
             -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
-          cmake --build build --config Release --parallel
 
+      # ── Build ─────────────────────────────────────────────────────────────
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --parallel
+
+      # ── Package ───────────────────────────────────────────────────────────
       - name: Package artifacts
         shell: bash
         run: |
           mkdir -p dist
-          tar -czf dist/atometa-${{ runner.os }}-${{ matrix.triplet }}.tar.gz -C build/bin .
+          tar -czf dist/atometa-${{ runner.os }}-${{ matrix.triplet }}.tar.gz \
+            -C build/bin .
 
-      - name: Generate Hash
+      - name: Generate checksums
         shell: bash
         run: |
           cd dist
-          if command -v sha256sum >/dev/null 2>&1; then
+          if command -v sha256sum &>/dev/null; then
             sha256sum *.tar.gz > hashes.sha256
           else
             shasum -a 256 *.tar.gz > hashes.sha256
           fi
-          
-      - name: Upload binaries
+
+      # ── Upload ────────────────────────────────────────────────────────────
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.preset }}
           path: dist/*
           retention-days: 7
 
-      - name: Create Release
+      # ── Release (tags only) ───────────────────────────────────────────────
+      - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
         with:
