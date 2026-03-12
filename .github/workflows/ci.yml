@@ -11,8 +11,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# ── vcpkg binary cache (compiled packages cached across ALL runs) ───────────
 env:
-  VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"   # GitHub Actions binary cache for compiled packages
+  VCPKG_COMMIT: af752f21c9d79ba3df9cb0250ce2233933f58486
+  VCPKG_ROOT:   ${{ github.workspace }}/vcpkg
 
 jobs:
   build:
@@ -24,100 +26,116 @@ jobs:
         include:
           - name:    Windows (x64)
             os:      windows-latest
-            preset:  windows-msvc
             triplet: x64-windows-static
 
           - name:    Linux (x64)
             os:      ubuntu-24.04
-            preset:  linux-gcc
             triplet: x64-linux
 
           - name:    macOS (arm64)
             os:      macos-14
-            preset:  macos-clang
             triplet: arm64-osx
 
     steps:
-      # ── Checkout ──────────────────────────────────────────────────────────
+      # ── 1. Checkout ────────────────────────────────────────────────────────
       - uses: actions/checkout@v4
         with: { submodules: recursive }
 
-      # ── vcpkg binary cache ────────────────────────────────────────────────
-      # Must come BEFORE vcpkg runs. Exports ACTIONS_CACHE_URL and
-      # ACTIONS_RUNTIME_TOKEN so vcpkg can read/write the GHA binary cache.
-      - name: Export GitHub Actions cache env vars
-        uses: actions/github-script@v7
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL',     process.env.ACTIONS_CACHE_URL    || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
-
-      # ── System deps ───────────────────────────────────────────────────────
+      # ── 2. System dependencies ─────────────────────────────────────────────
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            build-essential ninja-build pkg-config \
+            build-essential ninja-build pkg-config curl zip unzip tar \
             libgl1-mesa-dev libglu1-mesa-dev \
             libx11-dev libxrandr-dev libxinerama-dev \
             libxcursor-dev libxi-dev libxext-dev \
             libwayland-dev libxkbcommon-dev
 
-      - name: Install Ninja (macOS)
+      - name: Install build tools (macOS)
         if: runner.os == 'macOS'
         run: brew install ninja pkg-config
 
-      - name: Install Ninja (Windows)
+      - name: Install build tools (Windows)
         if: runner.os == 'Windows'
         run: choco install ninja --no-progress
 
-      # ── MSVC developer environment (Windows only) ─────────────────────────
-      # MUST come before vcpkg + CMake so that:
-      #   • vcpkg detects cl.exe and builds assimp with MSVC ABI
-      #   • CMake links against assimp-vc143-mt.lib with the same compiler
-      # Without this step, choco's Ninja is on PATH but cl.exe is not, and
-      # CMake falls back to MinGW gcc — causing the __CxxFrameHandler4 /
-      # __std_terminate ABI mismatch errors.
+      # ── 3. MSVC developer environment (Windows only) ───────────────────────
+      # Must run BEFORE vcpkg so the compiler hash uses cl.exe, not MinGW.
+      # This is what prevents the __CxxFrameHandler4 / __std_terminate ABI errors.
       - name: Setup MSVC developer environment
         if: runner.os == 'Windows'
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      # ── vcpkg ─────────────────────────────────────────────────────────────
-      # lukka/run-vcpkg:
-      #   • Bootstraps vcpkg if not already cached
-      #   • Runs `vcpkg install` from vcpkg.json
-      #   • Caches the vcpkg tool + installed tree between runs
-      # Compiled package binaries are cached separately via VCPKG_BINARY_SOURCES above.
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
+      # ── 4. Cache vcpkg tool itself ─────────────────────────────────────────
+      - name: Cache vcpkg bootstrap
+        uses: actions/cache@v4
+        id: cache-vcpkg-bootstrap
         with:
-          vcpkgJsonGlob: vcpkg.json
-          runVcpkgInstall: true
-          additionalCachedPaths: ${{ github.workspace }}/vcpkg_installed
+          path: ${{ env.VCPKG_ROOT }}
+          key: vcpkg-bootstrap-${{ runner.os }}-${{ env.VCPKG_COMMIT }}
 
-      # ── Configure ─────────────────────────────────────────────────────────
+      - name: Bootstrap vcpkg
+        if: steps.cache-vcpkg-bootstrap.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          git clone https://github.com/microsoft/vcpkg.git "$VCPKG_ROOT"
+          cd "$VCPKG_ROOT"
+          git checkout "$VCPKG_COMMIT"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./bootstrap-vcpkg.bat -disableMetrics
+          else
+            ./bootstrap-vcpkg.sh -disableMetrics
+          fi
+
+      # ── 5. Cache installed packages ────────────────────────────────────────
+      # Key includes vcpkg.json hash so cache invalidates when deps change
+      - name: Cache vcpkg installed packages
+        uses: actions/cache@v4
+        id: cache-vcpkg-packages
+        with:
+          path: ${{ github.workspace }}/vcpkg_installed
+          key: vcpkg-packages-${{ runner.os }}-${{ matrix.triplet }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json') }}
+          restore-keys: |
+            vcpkg-packages-${{ runner.os }}-${{ matrix.triplet }}-
+
+      # ── 6. Install dependencies ────────────────────────────────────────────
+      - name: Install vcpkg dependencies
+        if: steps.cache-vcpkg-packages.outputs.cache-hit != 'true'
+        shell: bash
+        env:
+          VCPKG_FORCE_SYSTEM_BINARIES: ${{ runner.os == 'macOS' && '1' || '' }}
+        run: |
+          "$VCPKG_ROOT/vcpkg" install \
+            --triplet=${{ matrix.triplet }} \
+            --vcpkg-root="$VCPKG_ROOT" \
+            --x-install-root="${{ github.workspace }}/vcpkg_installed" \
+            --x-manifest-root="${{ github.workspace }}"
+
+      # ── 7. Configure ───────────────────────────────────────────────────────
       - name: Configure CMake
         shell: bash
         env:
-          # Force cl.exe on Windows — prevents CMake from picking up MinGW
           CC:  ${{ runner.os == 'Windows' && 'cl' || '' }}
           CXX: ${{ runner.os == 'Windows' && 'cl' || '' }}
+          VCPKG_FORCE_SYSTEM_BINARIES: ${{ runner.os == 'macOS' && '1' || '' }}
         run: |
           cmake -B build -S . -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DATOMETA_USE_PCH=OFF \
-            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" \
-            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+            -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" \
+            -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }} \
+            -DVCPKG_INSTALLED_DIR="${{ github.workspace }}/vcpkg_installed"
 
-      # ── Build ─────────────────────────────────────────────────────────────
+      # ── 8. Build ───────────────────────────────────────────────────────────
       - name: Build
         shell: bash
         run: cmake --build build --config Release --parallel
 
-      # ── Package ───────────────────────────────────────────────────────────
+      # ── 9. Package ─────────────────────────────────────────────────────────
       - name: Package artifacts
         shell: bash
         run: |
@@ -135,15 +153,15 @@ jobs:
             shasum -a 256 *.tar.gz > hashes.sha256
           fi
 
-      # ── Upload ────────────────────────────────────────────────────────────
+      # ── 10. Upload ─────────────────────────────────────────────────────────
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: build-${{ matrix.preset }}
+          name: atometa-${{ runner.os }}-${{ matrix.triplet }}
           path: dist/*
           retention-days: 7
 
-      # ── Release (tags only) ───────────────────────────────────────────────
+      # ── 11. Release (tags only) ────────────────────────────────────────────
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v1
